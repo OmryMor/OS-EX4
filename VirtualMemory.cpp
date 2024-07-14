@@ -8,7 +8,7 @@
 #define ROOT_FRAME 0
 #define SUCCESS_RET_VAL 1
 #define FAILURE_RET_VAL 0
-
+#define NO_FRAME_FOUND -1
 /*****************************************************************************
 *                          Binary Calculations                               *
 *****************************************************************************/
@@ -31,6 +31,9 @@ uint64_t getPageIndex (uint64_t page_number, uint64_t depth_level)
          & offset_mask;
 }
 
+uint64_t getPageFromFrame(word_t frame_index, uint64_t row){
+  return frame_index << OFFSET_WIDTH | row;
+}
 /*****************************************************************************
 *                               Priority 1                                  *
 *****************************************************************************/
@@ -48,16 +51,45 @@ bool isFrameEmpty (word_t frame_index)
   return true;
 }
 
-word_t getEmptyFrameIndex ()
+word_t getEmptyFrameIndex (word_t original_frame, word_t current_frame,
+                           word_t parent_frame, uint64_t parent_row_index,
+                           uint64_t depth_level)
 {
-  for (word_t frame_index = 1; frame_index < NUM_FRAMES; frame_index++)
+  if (original_frame != current_frame && isFrameEmpty (current_frame))
   {
-    if (isFrameEmpty (frame_index))
+    if (current_frame != ROOT_FRAME)
     {
-      return frame_index;
+      //remove table reference to current frame before returning
+      PMwrite (parent_frame * PAGE_SIZE + parent_row_index, 0);
+      return current_frame;
+    }
+    else
+    {
+      return NO_FRAME_FOUND;
     }
   }
-  return -1;
+
+  if (depth_level == TABLES_DEPTH)
+  {
+    return NO_FRAME_FOUND;
+  }
+  for (uint64_t row = 0; row < PAGE_SIZE; row++)
+  {
+    word_t next_frame;
+    PMread (current_frame * PAGE_SIZE + row, &next_frame);
+    if (next_frame != 0)
+    {
+      parent_frame = current_frame;
+      current_frame = next_frame;
+      word_t empty_frame_index = getEmptyFrameIndex (original_frame, current_frame, parent_frame,
+                                                     row, depth_level + 1);
+      if (empty_frame_index != NO_FRAME_FOUND)
+      {
+        return empty_frame_index;
+      }
+    }
+  }
+  return NO_FRAME_FOUND;
 }
 
 /*****************************************************************************
@@ -68,7 +100,7 @@ word_t getMaxFrameIndex (word_t curr_frame_index, uint64_t depth_level)
 {
   word_t max_frame_index = curr_frame_index;
   //Base case
-  if (curr_frame_index == TABLES_DEPTH)
+  if (depth_level == TABLES_DEPTH)
   {
     return max_frame_index;
   }
@@ -95,6 +127,13 @@ word_t getMaxFrameIndex (word_t curr_frame_index, uint64_t depth_level)
 *                               Priority 3                                   *
 *****************************************************************************/
 
+typedef struct{
+    word_t parent;
+    uint64_t child_offset;
+    uint64_t page;
+}ParentChildPair;
+
+
 uint64_t calculateCyclicalDistance (word_t swap_in_page, word_t page)
 {
   uint64_t distance;
@@ -109,51 +148,94 @@ uint64_t calculateCyclicalDistance (word_t swap_in_page, word_t page)
   return (NUM_PAGES - distance) < distance ? NUM_PAGES - distance : distance;
 }
 
-word_t getSwapFrameIndex (uint64_t swap_in_page)
+ParentChildPair getSwapFrame (uint64_t swap_in_page, word_t current_frame,
+                              word_t parent_frame, uint64_t
+                           parent_row_index, uint64_t page, uint64_t
+                           depth_level, uint64_t &max_distance)
 {
-//  word_t swap_out_page;
-//  for (word_t frame_index = 1; frame_index < NUM_FRAMES; frame_index++)
-//  {
-//    uint64_t distance = calculateCyclicalDistance (swap_in_page, frame_index);
-//  }
+  if (depth_level == TABLES_DEPTH)
+  {
+    int distance = calculateCyclicalDistance (swap_in_page, page);
+    if (distance > max_distance)
+    {
+      max_distance = distance;
+      return {parent_frame, parent_row_index,page};
+    }
+  }
+  ParentChildPair swap_out_parent = {parent_frame, parent_row_index,page};
+  for (uint64_t row = 0; row < PAGE_SIZE; row++)
+  {
+    word_t next_frame;
+    page = (page << OFFSET_WIDTH) + row;
+    PMread (current_frame * PAGE_SIZE + row, &next_frame);
+    if (next_frame != 0)
+    {
+      swap_out_parent = getSwapFrame (swap_in_page, next_frame, current_frame,
+                                      row, page, depth_level + 1,
+                                      max_distance);
+    }
+  }
+  return swap_out_parent;
+}
 
+
+word_t removeRefernce(ParentChildPair pair){
+  word_t child;
+  PMread (pair.parent*PAGE_SIZE + pair.child_offset, &child);
+  PMevict (child, pair.page);
+  PMwrite (pair.parent*PAGE_SIZE + pair.child_offset, 0);
 }
 
 /*****************************************************************************
 *                            Page Fault Handler                              *
 *****************************************************************************/
 
-void removeTableReference ();
+
 
 word_t handlePageFault (word_t current_frame, uint64_t depth_level, uint64_t
 page_number)
 {
   //Priority 1
-  word_t empty_frame_index = getEmptyFrameIndex ();
-  if (empty_frame_index != -1)
+  word_t empty_frame_index = getEmptyFrameIndex (current_frame, ROOT_FRAME,
+                                                 0, 0, 0);
+  if (empty_frame_index != NO_FRAME_FOUND)
   {
-    //TODO Deal with dependencies and return
+    return empty_frame_index;
   }
   //Priority 2
   word_t max_frame_index = getMaxFrameIndex (current_frame, depth_level);
   if (max_frame_index + 1 < NUM_FRAMES)
   {
-    //TODO Deal with dependencies and return
+    return max_frame_index + 1;
   }
   //Priority 3
-  getSwapFrameIndex (page_number);
-}
+  uint64_t max_distance = 0;
+  ParentChildPair pair = getSwapFrame (page_number,
+                                       ROOT_FRAME,
+                                       ROOT_FRAME, 0,0,0,
+                                       max_distance);
 
+  word_t swap_out_frame = removeRefernce (pair);
+  return swap_out_frame;
+}
 
 /*****************************************************************************
 *                     Translate to Physical Address                          *
 *****************************************************************************/
 
+void createNewTable(word_t parent ,word_t frame, uint64_t index){
+  for(uint64_t row = 0; row < PAGE_SIZE; row ++){
+    PMwrite(frame * PAGE_SIZE + row, 0);
+  }
+  PMwrite (parent*PAGE_SIZE + index, frame);
+}
+
 void translateVirtualAddress (uint64_t virtualAddress, uint64_t &
 physical_address)
 {
+  bool page_fault = false;
   uint64_t page_number = getPageNumber (virtualAddress);
-  uint64_t curr_frame = ROOT_FRAME;
+  word_t curr_frame = ROOT_FRAME;
   for (int level = 0; level < TABLES_DEPTH; level++)
   {
     uint64_t page_index = getPageIndex (page_number, level);
@@ -161,10 +243,16 @@ physical_address)
     PMread (curr_frame * PAGE_SIZE + page_index, &next_frame);
     if (next_frame == 0)
     {
-      //TODO DEAL with Page fault
-      next_frame = handlePageFault (next_frame, level, page_number);
+      page_fault = true;
+      next_frame = handlePageFault (curr_frame, level, page_number);
+      if(level < TABLES_DEPTH - 1){
+        createNewTable (curr_frame, next_frame, page_index);
+      }
     }
     curr_frame = next_frame;
+  }
+  if(page_fault){
+    PMrestore (curr_frame, page_number);
   }
   uint64_t offset = getOffset (virtualAddress);
   physical_address = curr_frame * PAGE_SIZE + offset;
