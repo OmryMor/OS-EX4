@@ -1,0 +1,3 @@
+O:/Git Unity/OS-EX4/cmake-build-debug/CMakeFiles/OS_EX4.dir
+O:/Git Unity/OS-EX4/cmake-build-debug/CMakeFiles/edit_cache.dir
+O:/Git Unity/OS-EX4/cmake-build-debug/CMakeFiles/rebuild_cache.dir

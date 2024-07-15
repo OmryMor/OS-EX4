@@ -24,11 +24,13 @@ uint64_t getOffset (uint64_t virtualAddress)
   return virtualAddress & offset_mask;
 }
 
-uint64_t getPageIndex (uint64_t page_number, uint64_t depth_level)
-{
-  uint64_t offset_mask = (1 << OFFSET_WIDTH) - 1;
-  return (page_number >> (OFFSET_WIDTH * (TABLES_DEPTH - depth_level)))
-         & offset_mask;
+uint64_t getPageIndex (uint64_t virtualAddress, uint64_t depth_level) {
+    uint64_t mask = (1 << OFFSET_WIDTH) - 1;
+    uint64_t p = (virtualAddress >> (OFFSET_WIDTH * (TABLES_DEPTH -depth_level))) & mask;
+    return p;
+//  uint64_t offset_mask = (1 << OFFSET_WIDTH) - 1;
+//  return (virtualAddress >> (OFFSET_WIDTH * (TABLES_DEPTH - depth_level)))
+//         & offset_mask;
 }
 
 uint64_t getPageFromFrame(word_t frame_index, uint64_t row){
@@ -203,7 +205,7 @@ page_number)
     return empty_frame_index;
   }
   //Priority 2
-  word_t max_frame_index = getMaxFrameIndex (current_frame, depth_level);
+  word_t max_frame_index = getMaxFrameIndex (ROOT_FRAME, 0);
   if (max_frame_index + 1 < NUM_FRAMES)
   {
     return max_frame_index + 1;
@@ -236,21 +238,20 @@ physical_address)
   bool page_fault = false;
   uint64_t page_number = getPageNumber (virtualAddress);
   word_t curr_frame = ROOT_FRAME;
-  for (int level = 0; level < TABLES_DEPTH; level++)
-  {
-    uint64_t page_index = getPageIndex (page_number, level);
-    word_t next_frame = 0;
-    PMread (curr_frame * PAGE_SIZE + page_index, &next_frame);
-    if (next_frame == 0)
-    {
-      page_fault = true;
-      next_frame = handlePageFault (curr_frame, level, page_number);
-      if(level < TABLES_DEPTH - 1){
-        createNewTable (curr_frame, next_frame, page_index);
-      }
+    for (uint64_t level = 0; level < TABLES_DEPTH; level++) {
+
+        uint64_t page_index = getPageIndex(virtualAddress, level);
+        word_t next_frame=1;
+        PMread(curr_frame * PAGE_SIZE + page_index, &next_frame);
+        if (next_frame == 0) {
+            page_fault = true;
+            next_frame = handlePageFault(curr_frame, level, page_number);
+            if (level < TABLES_DEPTH - 1) {
+                createNewTable(curr_frame, next_frame, page_index);
+            }
+        }
+        curr_frame = next_frame;
     }
-    curr_frame = next_frame;
-  }
   if(page_fault){
     PMrestore (curr_frame, page_number);
   }
